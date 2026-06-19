@@ -6,129 +6,38 @@ Which employees handled more orders in the first half of their career
 — and by how much?
 */
 
-CREATE OR REPLACE FUNCTION sp_FirstOrder(
-    p_EMPLOYEEID int
-)
-RETURNS TIMESTAMP
-LANGUAGE plpgsql
-AS $$
-DECLARE 
-    v_first_order_date TIMESTAMP;
-BEGIN
-    SELECT min(o.orderdate) INTO v_first_order_date
+WITH employee_order_bounds AS (
+    SELECT
+        o.employeeid,
+        MIN(o.orderdate) AS first_order_date,
+        MAX(o.orderdate) AS last_order_date
     FROM orders o
-    JOIN Employees e
-    ON o.employeeid = e.employeeid
-    where e.employeeid = p_EMPLOYEEID;
+    GROUP BY o.employeeid
+),
 
-    RETURN v_first_order_date;
-END;
-$$;
+employee_midpoint AS (
+    SELECT
+        employeeid,
+        first_order_date,
+        last_order_date,
+        first_order_date + (last_order_date - first_order_date) / 2 AS midpoint
+    FROM employee_order_bounds
+),
 
-CREATE OR REPLACE FUNCTION sp_LastOrder(
-    p_EMPLOYEEID int
+order_counts AS (
+    SELECT
+        m.employeeid,
+        COUNT(*) FILTER (WHERE o.orderdate <  m.midpoint) AS orders_first_half,
+        COUNT(*) FILTER (WHERE o.orderdate >= m.midpoint) AS orders_second_half
+    FROM employee_midpoint m
+    JOIN orders o ON o.employeeid = m.employeeid
+    GROUP BY m.employeeid
 )
-RETURNS TIMESTAMP
-LANGUAGE plpgsql
-AS $$
-DECLARE
-    v_first_order_date TIMESTAMP;
-BEGIN
-    SELECT max(o.orderdate) INTO v_first_order_date
-    FROM orders o
-    JOIN Employees e
-    ON o.employeeid = e.employeeid
-    where e.employeeid = p_EMPLOYEEID;
 
-    RETURN v_first_order_date;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION sp_MidpointCareer(
-    p_Start TIMESTAMP,
-    p_END TIMESTAMP
-)
-RETURNS TIMESTAMP
-LANGUAGE plpgsql
-AS $$
-DECLARE 
-    midpoint TIMESTAMP;
-BEGIN
-    
-    midpoint :=p_Start + ((p_End - p_Start)/2);
-
-    RETURN midpoint;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION sp_ordersInFirstHalf(
-    p_Employee int,
-    p_midpoint TIMESTAMP
-)
-RETURNS INT
-LANGUAGE plpgsql
-AS $$
-DECLARE 
-    number_of_orders INT;
-BEGIN
-    SELECT Count(o.orderid) INTO number_of_orders
-    FROM orders o 
-    JOIN employees e
-    ON o.employeeid = e.employeeid
-    AND e.employeeid = p_Employee
-    where o.orderdate < p_midpoint
-    Group by p_employee;
-
-    RETURN number_of_orders;
-END;
-$$;
-
-CREATE OR REPLACE FUNCTION sp_ordersInSecondHalf(
-    p_Employee int,
-    p_midpoint TIMESTAMP
-)
-RETURNS INT
-LANGUAGE plpgsql
-AS $$
-DECLARE 
-    number_of_orders INT;
-BEGIN
-    SELECT Count(o.orderid) INTO number_of_orders
-    FROM orders o 
-    JOIN employees e
-    ON o.employeeid = e.employeeid
-    AND e.employeeid = p_Employee
-    where o.orderdate > p_midpoint
-    Group by p_employee;
-
-    RETURN number_of_orders;
-END;
-$$;
-
--- WIRING ALL THE FUNCTIONS TOGETHER
-
-SELECT * 
+SELECT e.*
 FROM Employees e
-where (
-    SELECT sp_OrdersinFirstHalf(
-                                e.employeeid,
-                                sp_midpointCareer(
-                                                    sp_FirstOrder(e.employeeid),
-                                                    sp_LastOrder(e.employeeid)
-                                                   )
-                                )
-) 
-<
-(
-    SELECT sp_OrdersinSecondHalf(
-                                e.employeeid,
-                                sp_midpointCareer(
-                                                    sp_FirstOrder(e.employeeid),
-                                                    sp_LastOrder(e.employeeid)
-                                                    )
-                                )
-);
-
+JOIN order_counts oc ON oc.employeeid = e.employeeid
+WHERE oc.orders_first_half < oc.orders_second_half;
 /*
 Tells you which employees started strong but slowed down over time. 
 Useful for spotting burnout or disengagement patterns.
@@ -158,7 +67,7 @@ FROM (
             rank() over(partition by p.categoryid order by sum(od.quantity*p.price) desc) as rnk
     FROM products p 
     JOIN ORDERDETAILS od
-    ON od.productid = p.productid
+    ON od.productid = p.productidw
     GROUP BY p.categoryid,p.supplierid
     
 ) x
@@ -278,7 +187,7 @@ on ee.employeeid = oo.employeeid
 left join shippers ss
 on ss.shipperid = oo.shipperid
 group by ee.employeeid, ee.firstname, ee.lastname, date_trunc('month', oo.orderdate)
-order by month, employee_name
+order by month, employee_name   
 
 /*
 Tells you each employee's monthly workload and how reliably orders are actually getting shipped.
